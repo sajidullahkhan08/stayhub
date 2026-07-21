@@ -1,130 +1,159 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const db = require("./models"); // Imports all models and the sequelize instance
 
 const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json()); // Crucial for parsing JSON bodies in POST/PUT
+app.use(express.json());
 
 // ==========================================
-// IN-MEMORY "DATABASE"
-// ==========================================
-let hotels = [
-  {
-    id: 1,
-    name: "The Grand Teerop",
-    location: "New York",
-    pricePerNight: 250,
-    ownerId: 101,
-  },
-  {
-    id: 2,
-    name: "Sunset Beach Resort",
-    location: "Miami",
-    pricePerNight: 180,
-    ownerId: 102,
-  },
-];
-
-// ==========================================
-// HOTEL ROUTES (CRUD)
+// HOTEL ROUTES (Database-Backed CRUD)
 // ==========================================
 
-// 1. GET ALL HOTELS
-app.get("/api/hotels", (req, res) => {
-  res.status(200).json({
-    success: true,
-    count: hotels.length,
-    data: hotels,
-  });
+// 1. GET ALL HOTELS (Includes associated Rooms)
+app.get("/api/hotels", async (req, res) => {
+  try {
+    const hotels = await db.Hotel.findAll({
+      include: [{ model: db.Room, as: "rooms" }],
+    });
+    res.status(200).json({ success: true, count: hotels.length, data: hotels });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
 });
 
-// 2. GET SINGLE HOTEL
-app.get("/api/hotels/:id", (req, res) => {
-  const hotel = hotels.find((h) => h.id === parseInt(req.params.id));
+// 2. GET SINGLE HOTEL BY ID
+app.get("/api/hotels/:id", async (req, res) => {
+  try {
+    const hotel = await db.Hotel.findByPk(req.params.id, {
+      include: [{ model: db.Room, as: "rooms" }],
+    });
 
-  if (!hotel) {
-    return res.status(404).json({ success: false, message: "Hotel not found" });
+    if (!hotel) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Hotel not found" });
+    }
+
+    res.status(200).json({ success: true, data: hotel });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
-
-  res.status(200).json({ success: true, data: hotel });
 });
 
 // 3. CREATE NEW HOTEL
-app.post("/api/hotels", (req, res) => {
-  const { name, location, pricePerNight, ownerId } = req.body;
+app.post("/api/hotels", async (req, res) => {
+  try {
+    const { name, city, description, ownerId } = req.body;
 
-  // Basic validation
-  if (!name || !location) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Please provide name and location" });
+    if (!name || !city) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Please provide name and city" });
+    }
+
+    const newHotel = await db.Hotel.create({
+      name,
+      city,
+      description,
+      ownerId,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Hotel created successfully",
+      data: newHotel,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
+});
 
-  const newHotel = {
-    id: hotels.length > 0 ? Math.max(...hotels.map((h) => h.id)) + 1 : 1, // Auto-increment ID
-    name,
-    location,
-    pricePerNight: pricePerNight || 0,
-    ownerId: ownerId || null,
-  };
-
-  hotels.push(newHotel);
-
-  res.status(201).json({
-    success: true,
-    message: "Hotel created successfully",
-    data: newHotel,
-  });
+// TEMPORARY: Create a test user
+app.post("/api/test-user", async (req, res) => {
+  try {
+    const newUser = await db.User.create({
+      name: "Test Owner",
+      email: "owner@stayhub.com",
+      password: "password123", // In production, we will hash this with bcrypt!
+      role: "owner",
+    });
+    res
+      .status(201)
+      .json({ success: true, message: "User created", data: newUser });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
 });
 
 // 4. UPDATE HOTEL
-app.put("/api/hotels/:id", (req, res) => {
-  const hotelIndex = hotels.findIndex((h) => h.id === parseInt(req.params.id));
+app.put("/api/hotels/:id", async (req, res) => {
+  try {
+    const hotel = await db.Hotel.findByPk(req.params.id);
 
-  if (hotelIndex === -1) {
-    return res.status(404).json({ success: false, message: "Hotel not found" });
+    if (!hotel) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Hotel not found" });
+    }
+
+    const { name, city, description, ownerId } = req.body;
+
+    await hotel.update({
+      name: name || hotel.name,
+      city: city || hotel.city,
+      description: description || hotel.description,
+      ownerId: ownerId !== undefined ? ownerId : hotel.ownerId,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Hotel updated successfully",
+      data: hotel,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
-
-  const updatedHotel = {
-    ...hotels[hotelIndex],
-    ...req.body, // Merge existing data with new data
-    id: hotels[hotelIndex].id, // Ensure ID doesn't change
-  };
-
-  hotels[hotelIndex] = updatedHotel;
-
-  res.status(200).json({
-    success: true,
-    message: "Hotel updated successfully",
-    data: updatedHotel,
-  });
 });
 
 // 5. DELETE HOTEL
-app.delete("/api/hotels/:id", (req, res) => {
-  const hotelIndex = hotels.findIndex((h) => h.id === parseInt(req.params.id));
+app.delete("/api/hotels/:id", async (req, res) => {
+  try {
+    const hotel = await db.Hotel.findByPk(req.params.id);
 
-  if (hotelIndex === -1) {
-    return res.status(404).json({ success: false, message: "Hotel not found" });
+    if (!hotel) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Hotel not found" });
+    }
+
+    await hotel.destroy();
+
+    res.status(200).json({
+      success: true,
+      message: "Hotel deleted successfully",
+      data: hotel,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
-
-  const deletedHotel = hotels[hotelIndex];
-  hotels = hotels.filter((h) => h.id !== parseInt(req.params.id));
-
-  res.status(200).json({
-    success: true,
-    message: "Hotel deleted successfully",
-    data: deletedHotel,
-  });
 });
 
 // ==========================================
-// SERVER START
+// SERVER START & DB CONNECTION CHECK
 // ==========================================
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+
+app.listen(PORT, async () => {
+  try {
+    await db.sequelize.authenticate();
+
+    console.log(`✅ Server running on http://localhost:${PORT}`);
+    console.log(`✅ Database (Supabase) connected successfully!`);
+  } catch (error) {
+    console.error(`❌ Unable to connect to the database:`, error);
+  }
 });
