@@ -1,145 +1,84 @@
+"use strict";
+
 require("dotenv").config();
+
 const express = require("express");
 const cors = require("cors");
-const db = require("./models"); // Imports all models and the sequelize instance
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+
+const db = require("./models");
+
+const authRoutes = require("./routes/authRoutes");
+const hotelRoutes = require("./routes/hotelRoutes");
+const bookingRoutes = require("./routes/bookingRoutes");
+const adminRoutes = require("./routes/adminRoutes");
 
 const app = express();
 
-// Middleware
-app.use(cors());
+// ==========================================
+// GLOBAL SECURITY & PARSING MIDDLEWARE
+// ==========================================
+app.use(helmet());
+
+app.use(
+  cors({
+    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    credentials: true,
+  }),
+);
+
 app.use(express.json());
 
+// Strict rate limit on auth endpoints to mitigate brute-force attacks
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message:
+      "Too many authentication attempts. Please try again after 15 minutes.",
+  },
+});
+
+app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/register", authLimiter);
+
 // ==========================================
-// HOTEL ROUTES (Database-Backed CRUD)
+// API ROUTES
 // ==========================================
+app.use("/api/auth", authRoutes);
+app.use("/api/hotels", hotelRoutes);
+app.use("/api/bookings", bookingRoutes);
+app.use("/api/admin", adminRoutes);
 
-// 1. GET ALL HOTELS (Includes associated Rooms)
-app.get("/api/hotels", async (req, res) => {
-  try {
-    const hotels = await db.Hotel.findAll({
-      include: [{ model: db.Room, as: "rooms" }],
-    });
-    res.status(200).json({ success: true, count: hotels.length, data: hotels });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+// Health check
+app.get("/api/health", (req, res) => {
+  res.status(200).json({ success: true, message: "StayHub API is running" });
 });
 
-// 2. GET SINGLE HOTEL BY ID
-app.get("/api/hotels/:id", async (req, res) => {
-  try {
-    const hotel = await db.Hotel.findByPk(req.params.id, {
-      include: [{ model: db.Room, as: "rooms" }],
-    });
-
-    if (!hotel) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Hotel not found" });
-    }
-
-    res.status(200).json({ success: true, data: hotel });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+// ==========================================
+// GLOBAL ERROR HANDLING
+// ==========================================
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route not found: ${req.method} ${req.originalUrl}`,
+  });
 });
 
-// 3. CREATE NEW HOTEL
-app.post("/api/hotels", async (req, res) => {
-  try {
-    const { name, city, description, ownerId } = req.body;
+app.use((err, req, res, next) => {
+  console.error("Unhandled error:", err);
 
-    if (!name || !city) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Please provide name and city" });
-    }
+  const statusCode = err.statusCode || err.status || 500;
 
-    const newHotel = await db.Hotel.create({
-      name,
-      city,
-      description,
-      ownerId,
-    });
-
-    res.status(201).json({
-      success: true,
-      message: "Hotel created successfully",
-      data: newHotel,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// TEMPORARY: Create a test user
-app.post("/api/test-user", async (req, res) => {
-  try {
-    const newUser = await db.User.create({
-      name: "Test Owner",
-      email: "owner@stayhub.com",
-      password: "password123", // In production, we will hash this with bcrypt!
-      role: "owner",
-    });
-    res
-      .status(201)
-      .json({ success: true, message: "User created", data: newUser });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// 4. UPDATE HOTEL
-app.put("/api/hotels/:id", async (req, res) => {
-  try {
-    const hotel = await db.Hotel.findByPk(req.params.id);
-
-    if (!hotel) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Hotel not found" });
-    }
-
-    const { name, city, description, ownerId } = req.body;
-
-    await hotel.update({
-      name: name || hotel.name,
-      city: city || hotel.city,
-      description: description || hotel.description,
-      ownerId: ownerId !== undefined ? ownerId : hotel.ownerId,
-    });
-
-    res.status(200).json({
-      success: true,
-      message: "Hotel updated successfully",
-      data: hotel,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// 5. DELETE HOTEL
-app.delete("/api/hotels/:id", async (req, res) => {
-  try {
-    const hotel = await db.Hotel.findByPk(req.params.id);
-
-    if (!hotel) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Hotel not found" });
-    }
-
-    await hotel.destroy();
-
-    res.status(200).json({
-      success: true,
-      message: "Hotel deleted successfully",
-      data: hotel,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
+  res.status(statusCode).json({
+    success: false,
+    message: err.message || "Internal Server Error",
+    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
+  });
 });
 
 // ==========================================
@@ -150,10 +89,11 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, async () => {
   try {
     await db.sequelize.authenticate();
-
     console.log(`✅ Server running on http://localhost:${PORT}`);
     console.log(`✅ Database (Supabase) connected successfully!`);
   } catch (error) {
-    console.error(`❌ Unable to connect to the database:`, error);
+    console.error(`❌ Unable to connect to the database:`, error.message);
   }
 });
+
+module.exports = app;
